@@ -4,14 +4,15 @@ package single
 
 import (
 	"context"
+	"sync"
 
-	adder "github.com/ipfs/ipfs-cluster/adder"
-	"github.com/ipfs/ipfs-cluster/api"
+	adder "github.com/ipfs-cluster/ipfs-cluster/adder"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 
 	cid "github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
 	logging "github.com/ipfs/go-log/v2"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 )
 
@@ -31,9 +32,10 @@ type DAGService struct {
 	addParams api.AddParams
 	local     bool
 
-	bs           *adder.BlockStreamer
-	blocks       chan api.NodeWithMeta
-	recentBlocks *recentBlocks
+	bs              *adder.BlockStreamer
+	blocks          chan api.NodeWithMeta
+	closeBlocksOnce sync.Once
+	recentBlocks    *recentBlocks
 }
 
 // New returns a new Adder with the given rpc Client. The client is used
@@ -109,10 +111,20 @@ func (dgs *DAGService) Add(ctx context.Context, node ipld.Node) error {
 	}
 }
 
+// Close cleans up the DAGService.
+func (dgs *DAGService) Close() error {
+	dgs.closeBlocksOnce.Do(func() {
+		close(dgs.blocks)
+	})
+	return nil
+}
+
 // Finalize pins the last Cid added to this DAGService.
 func (dgs *DAGService) Finalize(ctx context.Context, root api.Cid) (api.Cid, error) {
-	close(dgs.blocks)
+	// Close the blocks channel
+	dgs.Close()
 
+	// Wait for the BlockStreamer to finish.
 	select {
 	case <-dgs.ctx.Done():
 		return root, ctx.Err()

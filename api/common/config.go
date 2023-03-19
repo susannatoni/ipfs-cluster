@@ -11,16 +11,15 @@ import (
 	"path/filepath"
 	"time"
 
-	ipfsconfig "github.com/ipfs/go-ipfs-config"
 	logging "github.com/ipfs/go-log/v2"
-	crypto "github.com/libp2p/go-libp2p-core/crypto"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	crypto "github.com/libp2p/go-libp2p/core/crypto"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/rs/cors"
 
-	"github.com/ipfs/ipfs-cluster/config"
+	"github.com/ipfs-cluster/ipfs-cluster/config"
 )
 
 const minMaxHeaderBytes = 4096
@@ -28,7 +27,7 @@ const minMaxHeaderBytes = 4096
 const defaultMaxHeaderBytes = minMaxHeaderBytes
 
 // Config provides common API configuration values and allows to customize its
-// behaviour. It implements most of the config.ComponentConfig interface
+// behavior. It implements most of the config.ComponentConfig interface
 // (except the Default() and ConfigKey() methods). Config should be embedded
 // in a Config object that implements the missing methods and sets the
 // meta options.
@@ -110,18 +109,18 @@ type Config struct {
 }
 
 type jsonConfig struct {
-	HTTPListenMultiaddress ipfsconfig.Strings `json:"http_listen_multiaddress"`
-	SSLCertFile            string             `json:"ssl_cert_file,omitempty"`
-	SSLKeyFile             string             `json:"ssl_key_file,omitempty"`
-	ReadTimeout            string             `json:"read_timeout"`
-	ReadHeaderTimeout      string             `json:"read_header_timeout"`
-	WriteTimeout           string             `json:"write_timeout"`
-	IdleTimeout            string             `json:"idle_timeout"`
-	MaxHeaderBytes         int                `json:"max_header_bytes"`
+	HTTPListenMultiaddress config.Strings `json:"http_listen_multiaddress"`
+	SSLCertFile            string         `json:"ssl_cert_file,omitempty"`
+	SSLKeyFile             string         `json:"ssl_key_file,omitempty"`
+	ReadTimeout            string         `json:"read_timeout"`
+	ReadHeaderTimeout      string         `json:"read_header_timeout"`
+	WriteTimeout           string         `json:"write_timeout"`
+	IdleTimeout            string         `json:"idle_timeout"`
+	MaxHeaderBytes         int            `json:"max_header_bytes"`
 
-	Libp2pListenMultiaddress ipfsconfig.Strings `json:"libp2p_listen_multiaddress,omitempty"`
-	ID                       string             `json:"id,omitempty"`
-	PrivateKey               string             `json:"private_key,omitempty" hidden:"true"`
+	Libp2pListenMultiaddress config.Strings `json:"libp2p_listen_multiaddress,omitempty"`
+	ID                       string         `json:"id,omitempty"`
+	PrivateKey               string         `json:"private_key,omitempty" hidden:"true"`
 
 	BasicAuthCredentials map[string]string   `json:"basic_auth_credentials"  hidden:"true"`
 	HTTPLogFile          string              `json:"http_log_file"`
@@ -306,8 +305,9 @@ func (cfg *Config) tlsOptions(jcfg *jsonConfig) error {
 		key = filepath.Join(cfg.BaseDir, key)
 	}
 
-	cfg.Logger.Debug(cfg.BaseDir)
-	cfg.Logger.Debug(cert, key)
+	cfg.Logger.Debug("baseDir: ", cfg.BaseDir)
+	cfg.Logger.Debug("cert path: ", cert)
+	cfg.Logger.Debug("key path: ", key)
 
 	tlsCfg, err := newTLSConfig(cert, key)
 	if err != nil {
@@ -403,7 +403,7 @@ func (cfg *Config) toJSONConfig() (jcfg *jsonConfig, err error) {
 	}
 
 	if cfg.ID != "" {
-		jcfg.ID = peer.Encode(cfg.ID)
+		jcfg.ID = cfg.ID.String()
 	}
 	if cfg.PrivateKey != nil {
 		pkeyBytes, err := crypto.MarshalPrivateKey(cfg.PrivateKey)
@@ -462,7 +462,7 @@ func (cfg *Config) LogWriter() (io.Writer, error) {
 func newTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return nil, errors.New("Error loading TLS certficate/key: " + err.Error())
+		return nil, errors.New("error loading TLS certificate/key: " + err.Error())
 	}
 	// based on https://github.com/denji/golang-tls
 	return &tls.Config{

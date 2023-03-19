@@ -6,8 +6,8 @@ import (
 
 	ma "github.com/multiformats/go-multiaddr"
 
-	"github.com/ipfs/ipfs-cluster/api/common"
-	"github.com/ipfs/ipfs-cluster/api/pinsvcapi/pinsvc"
+	"github.com/ipfs-cluster/ipfs-cluster/api/common"
+	"github.com/ipfs-cluster/ipfs-cluster/api/pinsvcapi/pinsvc"
 )
 
 const configKey = "pinsvcapi"
@@ -67,7 +67,9 @@ func NewConfig() *Config {
 	cfg.DefaultFunc = defaultFunc
 	cfg.APIErrorFunc = func(err error, status int) error {
 		return pinsvc.APIError{
-			Reason: err.Error(),
+			Details: pinsvc.APIErrorDetails{
+				Reason: err.Error(),
+			},
 		}
 	}
 	return &cfg

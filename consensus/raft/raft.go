@@ -9,16 +9,18 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/state"
+	"github.com/ipfs-cluster/ipfs-cluster/state"
 
-	host "github.com/libp2p/go-libp2p-core/host"
-	peer "github.com/libp2p/go-libp2p-core/peer"
 	p2praft "github.com/libp2p/go-libp2p-raft"
+	host "github.com/libp2p/go-libp2p/core/host"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 
 	hraft "github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 	"go.opencensus.io/trace"
 )
+
+var raftLogger = &p2praft.HcLogToLogger{}
 
 // ErrWaitingForSelf is returned when we are waiting for ourselves to depart
 // the peer set, which won't happen
@@ -74,7 +76,7 @@ func newRaftWrapper(
 	raftW.host = host
 	raftW.staging = staging
 	// Set correct LocalID
-	cfg.RaftConfig.LocalID = hraft.ServerID(peer.Encode(host.ID()))
+	cfg.RaftConfig.LocalID = hraft.ServerID(host.ID().String())
 
 	df := cfg.GetDataFolder()
 	err := makeDataFolder(df)
@@ -148,7 +150,7 @@ func (rw *raftWrapper) makeStores() error {
 	snapstore, err := hraft.NewFileSnapshotStoreWithLogger(
 		df,
 		RaftMaxSnapshots,
-		raftStdLogger,
+		raftLogger,
 	)
 	if err != nil {
 		return err
@@ -231,7 +233,7 @@ func makeServerConf(peers []peer.ID) hraft.Configuration {
 
 	// Servers are peers + self. We avoid duplicate entries below
 	for _, pid := range peers {
-		p := peer.Encode(pid)
+		p := pid.String()
 		_, ok := sm[p]
 		if !ok { // avoid dups
 			sm[p] = struct{}{}
@@ -246,7 +248,7 @@ func makeServerConf(peers []peer.ID) hraft.Configuration {
 }
 
 // WaitForLeader holds until Raft says we have a leader.
-// Returns if ctx is cancelled.
+// Returns if ctx is canceled.
 func (rw *raftWrapper) WaitForLeader(ctx context.Context) (string, error) {
 	ctx, span := trace.StartSpan(ctx, "consensus/raft/WaitForLeader")
 	defer span.End()
@@ -273,7 +275,7 @@ func (rw *raftWrapper) WaitForVoter(ctx context.Context) error {
 
 	logger.Debug("waiting until we are promoted to a voter")
 
-	pid := hraft.ServerID(peer.Encode(rw.host.ID()))
+	pid := hraft.ServerID(rw.host.ID().String())
 	for {
 		select {
 		case <-ctx.Done():

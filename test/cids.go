@@ -1,8 +1,8 @@
 package test
 
 import (
-	"github.com/ipfs/ipfs-cluster/api"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Common variables used all around tests.

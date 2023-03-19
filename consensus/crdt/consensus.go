@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/pstoremgr"
-	"github.com/ipfs/ipfs-cluster/state"
-	"github.com/ipfs/ipfs-cluster/state/dsstate"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/pstoremgr"
+	"github.com/ipfs-cluster/ipfs-cluster/state"
+	"github.com/ipfs-cluster/ipfs-cluster/state/dsstate"
 
 	ds "github.com/ipfs/go-datastore"
 	namespace "github.com/ipfs/go-datastore/namespace"
@@ -21,12 +21,12 @@ import (
 	crdt "github.com/ipfs/go-ds-crdt"
 	dshelp "github.com/ipfs/go-ipfs-ds-help"
 	logging "github.com/ipfs/go-log/v2"
-	host "github.com/libp2p/go-libp2p-core/host"
-	peer "github.com/libp2p/go-libp2p-core/peer"
-	peerstore "github.com/libp2p/go-libp2p-core/peerstore"
-	"github.com/libp2p/go-libp2p-core/routing"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	host "github.com/libp2p/go-libp2p/core/host"
+	peer "github.com/libp2p/go-libp2p/core/peer"
+	peerstore "github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/core/routing"
 	multihash "github.com/multiformats/go-multihash"
 
 	ipfslite "github.com/hsanjuan/ipfs-lite"
@@ -36,7 +36,8 @@ import (
 var logger = logging.Logger("crdt")
 
 var (
-	blocksNs   = "b" // blockstore namespace
+	// BlocksNs is the namespace to use as blockstore with ipfs-lite.
+	BlocksNs   = "b"
 	connMgrTag = "crdt"
 )
 
@@ -49,17 +50,20 @@ var (
 
 // wraps pins so that they can be batched.
 type batchItem struct {
-	ctx   context.Context
-	isPin bool // pin or unpin
-	pin   api.Pin
+	ctx     context.Context
+	isPin   bool // pin or unpin
+	pin     api.Pin
+	batched chan error // notify if item was sent for batching
 }
 
 // Consensus implement ipfscluster.Consensus and provides the facility to add
 // and remove pins from the Cluster shared state. It uses a CRDT-backed
 // implementation of go-datastore (go-ds-crdt).
 type Consensus struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx            context.Context
+	cancel         context.CancelFunc
+	batchingCtx    context.Context
+	batchingCancel context.CancelFunc
 
 	config *Config
 
@@ -79,11 +83,14 @@ type Consensus struct {
 	dht    routing.Routing
 	pubsub *pubsub.PubSub
 
-	rpcClient   *rpc.Client
-	rpcReady    chan struct{}
-	stateReady  chan struct{}
-	readyCh     chan struct{}
-	batchItemCh chan batchItem
+	rpcClient  *rpc.Client
+	rpcReady   chan struct{}
+	stateReady chan struct{}
+	readyCh    chan struct{}
+
+	sendToBatchCh chan batchItem
+	batchItemCh   chan batchItem
+	batchingDone  chan struct{}
 
 	shutdownLock sync.RWMutex
 	shutdown     bool
@@ -105,14 +112,16 @@ func New(
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	batchingCtx, batchingCancel := context.WithCancel(ctx)
 
 	var blocksDatastore ds.Batching
 	ns := ds.NewKey(cfg.DatastoreNamespace)
-	blocksDatastore = namespace.Wrap(store, ns.ChildString(blocksNs))
+	blocksDatastore = namespace.Wrap(store, ns.ChildString(BlocksNs))
 
 	ipfs, err := ipfslite.New(
 		ctx,
 		blocksDatastore,
+		nil,
 		host,
 		dht,
 		&ipfslite.Config{
@@ -122,24 +131,29 @@ func New(
 	if err != nil {
 		logger.Errorf("error creating ipfs-lite: %s", err)
 		cancel()
+		batchingCancel()
 		return nil, err
 	}
 
 	css := &Consensus{
-		ctx:         ctx,
-		cancel:      cancel,
-		config:      cfg,
-		host:        host,
-		peerManager: pstoremgr.New(ctx, host, ""),
-		dht:         dht,
-		store:       store,
-		ipfs:        ipfs,
-		namespace:   ns,
-		pubsub:      pubsub,
-		rpcReady:    make(chan struct{}, 1),
-		readyCh:     make(chan struct{}, 1),
-		stateReady:  make(chan struct{}, 1),
-		batchItemCh: make(chan batchItem, cfg.Batching.MaxQueueSize),
+		ctx:            ctx,
+		cancel:         cancel,
+		batchingCtx:    batchingCtx,
+		batchingCancel: batchingCancel,
+		config:         cfg,
+		host:           host,
+		peerManager:    pstoremgr.New(ctx, host, ""),
+		dht:            dht,
+		store:          store,
+		ipfs:           ipfs,
+		namespace:      ns,
+		pubsub:         pubsub,
+		rpcReady:       make(chan struct{}, 1),
+		readyCh:        make(chan struct{}, 1),
+		stateReady:     make(chan struct{}, 1),
+		sendToBatchCh:  make(chan batchItem),
+		batchItemCh:    make(chan batchItem, cfg.Batching.MaxQueueSize),
+		batchingDone:   make(chan struct{}),
 	}
 
 	go css.setup()
@@ -312,6 +326,7 @@ func (css *Consensus) setup() {
 			css.config.Batching.MaxBatchSize,
 			css.config.Batching.MaxBatchAge.String(),
 		)
+		go css.sendToBatchWorker()
 		go css.batchWorker()
 	}
 
@@ -320,7 +335,7 @@ func (css *Consensus) setup() {
 	css.readyCh <- struct{}{}
 }
 
-// Shutdown closes this component, cancelling the pubsub subscription and
+// Shutdown closes this component, canceling the pubsub subscription and
 // closing the datastore.
 func (css *Consensus) Shutdown(ctx context.Context) error {
 	css.shutdownLock.Lock()
@@ -330,12 +345,19 @@ func (css *Consensus) Shutdown(ctx context.Context) error {
 		logger.Debug("already shutdown")
 		return nil
 	}
+	css.shutdown = true
 
 	logger.Info("stopping Consensus component")
 
+	// Cancel the batching code
+	css.batchingCancel()
+	if css.config.batchingEnabled() {
+		<-css.batchingDone
+	}
+
 	css.cancel()
 
-	// Only close crdt after cancelling the context, otherwise
+	// Only close crdt after canceling the context, otherwise
 	// the pubsub broadcaster stays on and locks it.
 	if crdt := css.crdt; crdt != nil {
 		crdt.Close()
@@ -357,7 +379,7 @@ func (css *Consensus) SetClient(c *rpc.Client) {
 	css.rpcReady <- struct{}{}
 }
 
-// Ready returns a channel which is signalled when the component
+// Ready returns a channel which is signaled when the component
 // is ready to use.
 func (css *Consensus) Ready(ctx context.Context) <-chan struct{} {
 	return css.readyCh
@@ -414,16 +436,14 @@ func (css *Consensus) LogPin(ctx context.Context, pin api.Pin) error {
 	defer span.End()
 
 	if css.config.batchingEnabled() {
-		select {
-		case css.batchItemCh <- batchItem{
-			ctx:   ctx,
-			isPin: true,
-			pin:   pin,
-		}:
-			return nil
-		default:
-			return fmt.Errorf("error pinning: %w", ErrMaxQueueSizeReached)
+		batched := make(chan error)
+		css.sendToBatchCh <- batchItem{
+			ctx:     ctx,
+			isPin:   true,
+			pin:     pin,
+			batched: batched,
 		}
+		return <-batched
 	}
 
 	return css.state.Add(ctx, pin)
@@ -435,23 +455,50 @@ func (css *Consensus) LogUnpin(ctx context.Context, pin api.Pin) error {
 	defer span.End()
 
 	if css.config.batchingEnabled() {
-		select {
-		case css.batchItemCh <- batchItem{
-			ctx:   ctx,
-			isPin: false,
-			pin:   pin,
-		}:
-			return nil
-		default:
-			return fmt.Errorf("error unpinning: %w", ErrMaxQueueSizeReached)
+		batched := make(chan error)
+		css.sendToBatchCh <- batchItem{
+			ctx:     ctx,
+			isPin:   false,
+			pin:     pin,
+			batched: batched,
 		}
+		return <-batched
 	}
 
 	return css.state.Rm(ctx, pin.Cid)
 }
 
+func (css *Consensus) sendToBatchWorker() {
+	for {
+		select {
+		case <-css.batchingCtx.Done():
+			close(css.batchItemCh)
+			// This will stay here forever to catch any pins sent
+			// while shutting down.
+			for bi := range css.sendToBatchCh {
+				bi.batched <- errors.New("shutting down. Pin could not be batched")
+				close(bi.batched)
+			}
+
+			return
+		case bi := <-css.sendToBatchCh:
+			select {
+			case css.batchItemCh <- bi:
+				close(bi.batched) // no error
+			default: // queue is full
+				err := fmt.Errorf("error batching item: %w", ErrMaxQueueSizeReached)
+				logger.Error(err)
+				bi.batched <- err
+				close(bi.batched)
+			}
+		}
+	}
+}
+
 // Launched in setup as a goroutine.
 func (css *Consensus) batchWorker() {
+	defer close(css.batchingDone)
+
 	maxSize := css.config.Batching.MaxBatchSize
 	maxAge := css.config.Batching.MaxBatchAge
 	batchCurSize := 0
@@ -462,9 +509,36 @@ func (css *Consensus) batchWorker() {
 		<-batchTimer.C
 	}
 
+	// Add/Rm from state
+	addToBatch := func(bi batchItem) error {
+		var err error
+		if bi.isPin {
+			err = css.batchingState.Add(bi.ctx, bi.pin)
+		} else {
+			err = css.batchingState.Rm(bi.ctx, bi.pin.Cid)
+		}
+		if err != nil {
+			logger.Errorf("error batching: %s (%s, isPin: %s)", err, bi.pin.Cid, bi.isPin)
+		}
+		return err
+	}
+
 	for {
 		select {
-		case <-css.ctx.Done():
+		case <-css.batchingCtx.Done():
+			// Drain batchItemCh for missing things to be batched
+			for batchItem := range css.batchItemCh {
+				err := addToBatch(batchItem)
+				if err != nil {
+					continue
+				}
+				batchCurSize++
+			}
+			if err := css.batchingState.Commit(css.ctx); err != nil {
+				logger.Errorf("error committing batch during shutdown: %s", err)
+			}
+			logger.Infof("batch commit (shutdown): %d items", batchCurSize)
+
 			return
 		case batchItem := <-css.batchItemCh:
 			// First item in batch. Start the timer
@@ -472,15 +546,8 @@ func (css *Consensus) batchWorker() {
 				batchTimer.Reset(maxAge)
 			}
 
-			// Add/Rm from state
-			var err error
-			if batchItem.isPin {
-				err = css.batchingState.Add(batchItem.ctx, batchItem.pin)
-			} else {
-				err = css.batchingState.Rm(batchItem.ctx, batchItem.pin.Cid)
-			}
+			err := addToBatch(batchItem)
 			if err != nil {
-				logger.Errorf("error batching: %s (%s, isPin: %s)", err, batchItem.pin.Cid, batchItem.isPin)
 				continue
 			}
 
@@ -491,7 +558,7 @@ func (css *Consensus) batchWorker() {
 			}
 
 			if err := css.batchingState.Commit(css.ctx); err != nil {
-				logger.Errorf("error commiting batch after reaching max size: %s", err)
+				logger.Errorf("error committing batch after reaching max size: %s", err)
 				continue
 			}
 			logger.Infof("batch commit (size): %d items", maxSize)
@@ -506,7 +573,7 @@ func (css *Consensus) batchWorker() {
 		case <-batchTimer.C:
 			// Commit
 			if err := css.batchingState.Commit(css.ctx); err != nil {
-				logger.Errorf("error commiting batch after reaching max age: %s", err)
+				logger.Errorf("error committing batch after reaching max age: %s", err)
 				continue
 			}
 			logger.Infof("batch commit (max age): %d items", batchCurSize)
@@ -575,7 +642,7 @@ func (css *Consensus) RmPeer(ctx context.Context, pid peer.ID) error {
 }
 
 // State returns the cluster shared state. It will block until the consensus
-// component is ready, shutdown or the given context has been cancelled.
+// component is ready, shutdown or the given context has been canceled.
 func (css *Consensus) State(ctx context.Context) (state.ReadOnly, error) {
 	select {
 	case <-ctx.Done():
@@ -641,12 +708,13 @@ func OfflineState(cfg *Config, store ds.Datastore) (state.BatchingState, error) 
 
 	var blocksDatastore ds.Batching = namespace.Wrap(
 		batching,
-		ds.NewKey(cfg.DatastoreNamespace).ChildString(blocksNs),
+		ds.NewKey(cfg.DatastoreNamespace).ChildString(BlocksNs),
 	)
 
 	ipfs, err := ipfslite.New(
 		context.Background(),
 		blocksDatastore,
+		nil,
 		nil,
 		nil,
 		&ipfslite.Config{

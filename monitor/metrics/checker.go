@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 // AlertChannelCap specifies how much buffer the alerts channel has.
@@ -143,7 +143,7 @@ func (mc *Checker) Alerts() <-chan api.Alert {
 }
 
 // Watch will trigger regular CheckPeers on the given interval. It will call
-// peersF to obtain a peerset. It can be stopped by cancelling the context.
+// peersF to obtain a peerset. It can be stopped by canceling the context.
 // Usually you want to launch this in a goroutine.
 func (mc *Checker) Watch(ctx context.Context, peersF func(context.Context) ([]peer.ID, error), interval time.Duration) {
 	ticker := time.NewTicker(interval)

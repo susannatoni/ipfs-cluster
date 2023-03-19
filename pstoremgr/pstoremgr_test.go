@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/test"
+	"github.com/ipfs-cluster/ipfs-cluster/test"
 
 	libp2p "github.com/libp2p/go-libp2p"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -28,7 +28,7 @@ func clean(pm *Manager) {
 }
 
 func testAddr(loc string, pid peer.ID) ma.Multiaddr {
-	m, _ := ma.NewMultiaddr(loc + "/p2p/" + peer.Encode(pid))
+	m, _ := ma.NewMultiaddr(loc + "/p2p/" + pid.String())
 	return m
 }
 

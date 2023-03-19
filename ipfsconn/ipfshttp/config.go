@@ -8,7 +8,7 @@ import (
 
 	"github.com/kelseyhightower/envconfig"
 
-	"github.com/ipfs/ipfs-cluster/config"
+	"github.com/ipfs-cluster/ipfs-cluster/config"
 
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -29,7 +29,7 @@ const (
 )
 
 // Config is used to initialize a Connector and allows to customize
-// its behaviour. It implements the config.ComponentConfig interface.
+// its behavior. It implements the config.ComponentConfig interface.
 type Config struct {
 	config.Saver
 

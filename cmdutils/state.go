@@ -7,16 +7,18 @@ import (
 	"fmt"
 	"io"
 
-	ipfscluster "github.com/ipfs/ipfs-cluster"
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/config"
-	"github.com/ipfs/ipfs-cluster/consensus/crdt"
-	"github.com/ipfs/ipfs-cluster/consensus/raft"
-	"github.com/ipfs/ipfs-cluster/datastore/badger"
-	"github.com/ipfs/ipfs-cluster/datastore/inmem"
-	"github.com/ipfs/ipfs-cluster/datastore/leveldb"
-	"github.com/ipfs/ipfs-cluster/pstoremgr"
-	"github.com/ipfs/ipfs-cluster/state"
+	ipfscluster "github.com/ipfs-cluster/ipfs-cluster"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/config"
+	"github.com/ipfs-cluster/ipfs-cluster/consensus/crdt"
+	"github.com/ipfs-cluster/ipfs-cluster/consensus/raft"
+	"github.com/ipfs-cluster/ipfs-cluster/datastore/badger"
+	"github.com/ipfs-cluster/ipfs-cluster/datastore/badger3"
+	"github.com/ipfs-cluster/ipfs-cluster/datastore/inmem"
+	"github.com/ipfs-cluster/ipfs-cluster/datastore/leveldb"
+	"github.com/ipfs-cluster/ipfs-cluster/datastore/pebble"
+	"github.com/ipfs-cluster/ipfs-cluster/pstoremgr"
+	"github.com/ipfs-cluster/ipfs-cluster/state"
 
 	ds "github.com/ipfs/go-datastore"
 )
@@ -126,8 +128,12 @@ func (crdtsm *crdtStateManager) GetStore() (ds.Datastore, error) {
 	switch crdtsm.datastore {
 	case crdtsm.cfgs.Badger.ConfigKey():
 		return badger.New(crdtsm.cfgs.Badger)
+	case crdtsm.cfgs.Badger3.ConfigKey():
+		return badger3.New(crdtsm.cfgs.Badger3)
 	case crdtsm.cfgs.LevelDB.ConfigKey():
 		return leveldb.New(crdtsm.cfgs.LevelDB)
+	case crdtsm.cfgs.Pebble.ConfigKey():
+		return pebble.New(crdtsm.cfgs.Pebble)
 	default:
 		return nil, errors.New("unknown datastore")
 	}

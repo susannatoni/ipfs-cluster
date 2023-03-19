@@ -11,7 +11,7 @@ import (
 	"github.com/imdario/mergo"
 	"github.com/kelseyhightower/envconfig"
 
-	"github.com/ipfs/ipfs-cluster/config"
+	"github.com/ipfs-cluster/ipfs-cluster/config"
 )
 
 const configKey = "badger"
@@ -71,7 +71,7 @@ type Config struct {
 }
 
 // badgerOptions is a copy of options.BadgerOptions but
-// without the Logger as it cannot be marshalled to/from
+// without the Logger as it cannot be marshaled to/from
 // JSON.
 type badgerOptions struct {
 	Dir                     string                   `json:"dir"`
@@ -169,6 +169,7 @@ func (cfg *Config) Default() error {
 	cfg.GCInterval = DefaultGCInterval
 	cfg.GCSleep = DefaultGCSleep
 	cfg.BadgerOptions = DefaultBadgerOptions
+	cfg.BadgerOptions.Logger = logger
 	return nil
 }
 

@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/datastore/inmem"
-	"github.com/ipfs/ipfs-cluster/test"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/datastore/inmem"
+	"github.com/ipfs-cluster/ipfs-cluster/test"
 
 	ipns "github.com/ipfs/go-ipns"
 	libp2p "github.com/libp2p/go-libp2p"
-	host "github.com/libp2p/go-libp2p-core/host"
-	peerstore "github.com/libp2p/go-libp2p-core/peerstore"
+	host "github.com/libp2p/go-libp2p/core/host"
+	peerstore "github.com/libp2p/go-libp2p/core/peerstore"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	dual "github.com/libp2p/go-libp2p-kad-dht/dual"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -451,7 +451,7 @@ func TestBatching(t *testing.T) {
 		t.Error("the added pin should be in the state")
 	}
 
-	// Pin 4 things, and check that 3 are commited
+	// Pin 4 things, and check that 3 are committed
 	for _, c := range []api.Cid{test.Cid2, test.Cid3, test.Cid4, test.Cid5} {
 		err = cc.LogPin(ctx, testPin(c))
 		if err != nil {

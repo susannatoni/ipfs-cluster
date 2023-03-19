@@ -1,24 +1,29 @@
 package ipfsproxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/test"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/test"
 
+	cid "github.com/ipfs/go-cid"
 	cmd "github.com/ipfs/go-ipfs-cmds"
 	logging "github.com/ipfs/go-log/v2"
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/multiformats/go-multicodec"
+	"github.com/multiformats/go-multihash"
 )
 
 func init() {
@@ -65,7 +70,7 @@ func TestIPFSProxyVersion(t *testing.T) {
 		t.Fatal("should forward requests to ipfs host: ", err)
 	}
 	defer res.Body.Close()
-	resBytes, _ := ioutil.ReadAll(res.Body)
+	resBytes, _ := io.ReadAll(res.Body)
 	if res.StatusCode != http.StatusOK {
 		t.Error("the request should have succeeded")
 		t.Fatal(string(resBytes))
@@ -170,7 +175,7 @@ func TestIPFSProxyPin(t *testing.T) {
 				t.Errorf("statusCode: got = %v, want %v", res.StatusCode, tt.args.statusCode)
 			}
 
-			resBytes, _ := ioutil.ReadAll(res.Body)
+			resBytes, _ := io.ReadAll(res.Body)
 
 			switch tt.wantErr {
 			case false:
@@ -283,7 +288,7 @@ func TestIPFSProxyUnpin(t *testing.T) {
 				t.Errorf("statusCode: got = %v, want %v", res.StatusCode, tt.args.statusCode)
 			}
 
-			resBytes, _ := ioutil.ReadAll(res.Body)
+			resBytes, _ := io.ReadAll(res.Body)
 
 			switch tt.wantErr {
 			case false:
@@ -352,7 +357,7 @@ func TestIPFSProxyPinUpdate(t *testing.T) {
 		defer res.Body.Close()
 
 		var resp ipfsPinOpResp
-		resBytes, _ := ioutil.ReadAll(res.Body)
+		resBytes, _ := io.ReadAll(res.Body)
 		err = json.Unmarshal(resBytes, &resp)
 		if err != nil {
 			t.Fatal(err)
@@ -378,7 +383,7 @@ func TestIPFSProxyPinUpdate(t *testing.T) {
 			t.Fatal("request should error")
 		}
 
-		resBytes, _ := ioutil.ReadAll(res.Body)
+		resBytes, _ := io.ReadAll(res.Body)
 		var respErr cmd.Error
 		err = json.Unmarshal(resBytes, &respErr)
 		if err != nil {
@@ -404,7 +409,7 @@ func TestIPFSProxyPinUpdate(t *testing.T) {
 			t.Fatal("request should error")
 		}
 
-		resBytes, _ := ioutil.ReadAll(res.Body)
+		resBytes, _ := io.ReadAll(res.Body)
 		var respErr cmd.Error
 		err = json.Unmarshal(resBytes, &respErr)
 		if err != nil {
@@ -433,7 +438,7 @@ func TestIPFSProxyPinLs(t *testing.T) {
 			t.Error("the request should have succeeded")
 		}
 
-		resBytes, _ := ioutil.ReadAll(res.Body)
+		resBytes, _ := io.ReadAll(res.Body)
 		var resp ipfsPinLsResp
 		err = json.Unmarshal(resBytes, &resp)
 		if err != nil {
@@ -456,7 +461,7 @@ func TestIPFSProxyPinLs(t *testing.T) {
 			t.Error("the request should have succeeded")
 		}
 
-		resBytes, _ := ioutil.ReadAll(res.Body)
+		resBytes, _ := io.ReadAll(res.Body)
 		var resp ipfsPinLsResp
 		err = json.Unmarshal(resBytes, &resp)
 		if err != nil {
@@ -479,7 +484,7 @@ func TestIPFSProxyPinLs(t *testing.T) {
 			t.Error("the request should have succeeded")
 		}
 
-		resBytes, _ := ioutil.ReadAll(res2.Body)
+		resBytes, _ := io.ReadAll(res2.Body)
 		var resp ipfsPinLsResp
 		err = json.Unmarshal(resBytes, &resp)
 		if err != nil {
@@ -518,7 +523,7 @@ func TestProxyRepoStat(t *testing.T) {
 		t.Error("request should have succeeded")
 	}
 
-	resBytes, _ := ioutil.ReadAll(res.Body)
+	resBytes, _ := io.ReadAll(res.Body)
 	var stat api.IPFSRepoStat
 	err = json.Unmarshal(resBytes, &stat)
 	if err != nil {
@@ -710,6 +715,252 @@ func TestProxyError(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != 404 {
 		t.Error("should have respected the status code")
+	}
+}
+
+func TestProxyBlockPut(t *testing.T) {
+	ctx := context.Background()
+	proxy, mock := testIPFSProxy(t)
+	defer mock.Close()
+	defer proxy.Shutdown(ctx)
+
+	type testcase struct {
+		pin           bool
+		expectedCodec multicodec.Code
+		query         string
+	}
+
+	block1 := []byte("block1")
+	block2 := []byte("block2")
+
+	sum1, err := multihash.Sum([]byte(block1), multihash.SHA2_256, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum2, err := multihash.Sum([]byte(block2), multihash.SHA2_256, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testcases := []testcase{
+		{
+			pin:           true,
+			expectedCodec: multicodec.Raw,
+		},
+		{
+			pin:           true,
+			expectedCodec: multicodec.DagPb,
+		},
+		{
+			pin:           false,
+			expectedCodec: multicodec.Raw,
+		},
+		{
+			pin:           true,
+			expectedCodec: multicodec.DagCbor,
+		},
+	}
+
+	// Set the query string
+	for i, tc := range testcases {
+		q := url.Values{}
+		q.Add("pin", fmt.Sprintf("%t", tc.pin))
+		q.Add("cid-codec", tc.expectedCodec.String())
+		testcases[i].query = q.Encode()
+	}
+
+	reqs := make([]*http.Request, len(testcases))
+
+	// Prepare requests to be made.
+	for i, tc := range testcases {
+		var body bytes.Buffer
+		mpw := multipart.NewWriter(&body)
+		w1, err := mpw.CreateFormFile("file", "b2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		w1.Write(block1)
+		w2, err := mpw.CreateFormFile("file", "b1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		w2.Write(block2)
+		mpw.Close()
+
+		url := fmt.Sprintf("%s/block/put?"+tc.query, proxyURL(proxy))
+		req, _ := http.NewRequest("POST", url, &body)
+		req.Header.Set("Content-Type", mpw.FormDataContentType())
+		reqs[i] = req
+	}
+
+	for i, tc := range testcases {
+		t.Run(tc.query, func(t *testing.T) {
+			res, err := http.DefaultClient.Do(reqs[i])
+			if err != nil {
+				t.Fatal("should have succeeded: ", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("Bad response status: got = %d, want = %d", res.StatusCode, http.StatusOK)
+			}
+
+			var blockCids []api.Cid
+			var resp ipfsBlockPutResp
+			dec := json.NewDecoder(res.Body)
+
+			for {
+				err := dec.Decode(&resp)
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				blockCids = append(blockCids, resp.Key)
+			}
+
+			if len(blockCids) != 2 {
+				t.Fatal("expected 2 block cids in response", len(blockCids))
+			}
+
+			if mh := blockCids[0].Cid.Hash(); !bytes.Equal(mh, sum1) {
+				t.Error("cid1 should match the multihash of the block sent", mh, sum1)
+			}
+
+			if mh := blockCids[1].Cid.Hash(); !bytes.Equal(mh, sum2) {
+				t.Error("cid2 should match the multihash of the block sent", mh, sum2)
+			}
+
+			for _, c := range blockCids {
+				if cdc := multicodec.Code(c.Cid.Prefix().Codec); cdc != testcases[i].expectedCodec {
+					t.Error("wrong codec in returned cid", cdc, testcases[i].expectedCodec)
+				}
+			}
+
+		})
+	}
+}
+
+func TestProxyDagPut(t *testing.T) {
+	ctx := context.Background()
+	proxy, mock := testIPFSProxy(t)
+	defer mock.Close()
+	defer proxy.Shutdown(ctx)
+
+	type testcase struct {
+		pin           bool
+		expectedCodec multicodec.Code
+		query         string
+	}
+
+	dag1 := []byte(`{"a": 1}`)
+	dag2 := []byte(`{"b": 2}`)
+
+	sum1, err := multihash.Sum([]byte(dag1), multihash.SHA2_256, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum2, err := multihash.Sum([]byte(dag2), multihash.SHA2_256, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testcases := []testcase{
+		{
+			pin:           true,
+			expectedCodec: multicodec.Raw,
+		},
+		{
+			pin:           true,
+			expectedCodec: multicodec.DagPb,
+		},
+		{
+			pin:           false,
+			expectedCodec: multicodec.Raw,
+		},
+		{
+			pin:           true,
+			expectedCodec: multicodec.DagCbor,
+		},
+	}
+
+	// Set the query string
+	for i, tc := range testcases {
+		q := url.Values{}
+		q.Add("pin", fmt.Sprintf("%t", tc.pin))
+		q.Add("store-codec", tc.expectedCodec.String())
+		testcases[i].query = q.Encode()
+	}
+
+	reqs := make([]*http.Request, len(testcases))
+
+	// Prepare requests to be made.
+	for i, tc := range testcases {
+		var body bytes.Buffer
+		mpw := multipart.NewWriter(&body)
+		w1, err := mpw.CreateFormFile("file", "dag1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		w1.Write(dag1)
+		w2, err := mpw.CreateFormFile("file", "dag2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		w2.Write(dag2)
+		mpw.Close()
+
+		url := fmt.Sprintf("%s/dag/put?"+tc.query, proxyURL(proxy))
+		req, _ := http.NewRequest("POST", url, &body)
+		req.Header.Set("Content-Type", mpw.FormDataContentType())
+		reqs[i] = req
+	}
+
+	for i, tc := range testcases {
+		t.Run(tc.query, func(t *testing.T) {
+			res, err := http.DefaultClient.Do(reqs[i])
+			if err != nil {
+				t.Fatal("should have succeeded: ", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("Bad response status: got = %d, want = %d", res.StatusCode, http.StatusOK)
+			}
+
+			var dagCids []cid.Cid
+			var resp ipfsDagPutResp
+			dec := json.NewDecoder(res.Body)
+
+			for {
+				err := dec.Decode(&resp)
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				dagCids = append(dagCids, resp.Cid)
+			}
+
+			if len(dagCids) != 2 {
+				t.Fatal("expected 2 dag cids in response", len(dagCids))
+			}
+
+			if mh := dagCids[0].Hash(); !bytes.Equal(mh, sum1) {
+				t.Error("cid1 should match the multihash of the dag sent", mh, sum1)
+			}
+
+			if mh := dagCids[1].Hash(); !bytes.Equal(mh, sum2) {
+				t.Error("cid2 should match the multihash of the dag sent", mh, sum2)
+			}
+
+			for _, c := range dagCids {
+				if cdc := multicodec.Code(c.Prefix().Codec); cdc != testcases[i].expectedCodec {
+					t.Error("wrong codec in returned cid", cdc, testcases[i].expectedCodec)
+				}
+			}
+
+		})
 	}
 }
 

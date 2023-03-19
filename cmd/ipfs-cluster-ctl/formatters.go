@@ -9,9 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
-
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 
 	humanize "github.com/dustin/go-humanize"
 )
@@ -241,7 +239,7 @@ func textFormatPrintPin(obj api.Pin) {
 	}
 	expireAt := "∞"
 	if !obj.ExpireAt.IsZero() {
-		expireAt = obj.Timestamp.Format("2006-01-02 15:04:05")
+		expireAt = obj.ExpireAt.Format("2006-01-02 15:04:05")
 	}
 	fmt.Printf(" | Exp: %s", expireAt)
 
@@ -270,7 +268,7 @@ func textFormatPrintMetric(obj api.Metric) {
 		v = humanize.Bytes(uint64(obj.Weight))
 	}
 
-	fmt.Printf("%s | %s: %s | Expires in: %s\n", peer.Encode(obj.Peer), obj.Name, v, humanize.Time(time.Unix(0, obj.Expire)))
+	fmt.Printf("%s | %s: %s | Expires in: %s\n", obj.Peer, obj.Name, v, humanize.Time(time.Unix(0, obj.Expire)))
 }
 
 func textFormatPrintAlert(obj api.Alert) {

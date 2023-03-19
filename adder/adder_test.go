@@ -3,18 +3,19 @@ package adder
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"mime/multipart"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/test"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/test"
 	"github.com/ipld/go-car"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 
 	cid "github.com/ipfs/go-cid"
-	files "github.com/ipfs/go-ipfs-files"
+	files "github.com/ipfs/go-libipfs/files"
 )
 
 type mockCDAGServ struct {
@@ -23,7 +24,14 @@ type mockCDAGServ struct {
 
 func newMockCDAGServ() *mockCDAGServ {
 	return &mockCDAGServ{
-		MockDAGService: test.NewMockDAGService(),
+		// write-only DAGs.
+		MockDAGService: test.NewMockDAGService(true),
+	}
+}
+
+func newReadableMockCDAGServ() *mockCDAGServ {
+	return &mockCDAGServ{
+		MockDAGService: test.NewMockDAGService(false),
 	}
 }
 
@@ -47,6 +55,7 @@ func TestAdder(t *testing.T) {
 	expectedCids := test.ShardingDirCids[:]
 
 	dags := newMockCDAGServ()
+	defer dags.Close()
 
 	adder := New(dags, p, nil)
 
@@ -80,6 +89,7 @@ func TestAdder_DoubleStart(t *testing.T) {
 	p := api.DefaultAddParams()
 
 	dags := newMockCDAGServ()
+	defer dags.Close()
 
 	adder := New(dags, p, nil)
 	_, err := adder.FromFiles(context.Background(), f)
@@ -116,6 +126,7 @@ func TestAdder_ContextCancelled(t *testing.T) {
 	p := api.DefaultAddParams()
 
 	dags := newMockCDAGServ()
+	defer dags.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	adder := New(dags, p, nil)
@@ -125,7 +136,7 @@ func TestAdder_ContextCancelled(t *testing.T) {
 		defer wg.Done()
 		_, err := adder.FromMultipart(ctx, r)
 		if err == nil {
-			t.Error("expected a context cancelled error")
+			t.Error("expected a context canceled error")
 		}
 		t.Log(err)
 	}()
@@ -145,13 +156,14 @@ func TestAdder_CAR(t *testing.T) {
 	defer closer.Close()
 	r := multipart.NewReader(mr, mr.Boundary())
 	p := api.DefaultAddParams()
-	dags := newMockCDAGServ()
+	dags := newReadableMockCDAGServ()
 	adder := New(dags, p, nil)
 	root, err := adder.FromMultipart(ctx, r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var carBuf bytes.Buffer
+	// Make a CAR out of the files we added.
 	err = car.WriteCar(ctx, dags, []cid.Cid{root.Cid}, &carBuf)
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +179,8 @@ func TestAdder_CAR(t *testing.T) {
 
 	// Add the car, discarding old dags.
 	dags = newMockCDAGServ()
+	defer dags.Close()
+
 	p.Format = "car"
 	adder = New(dags, p, nil)
 	root2, err := adder.FromMultipart(ctx, carMr)
@@ -187,4 +201,33 @@ func TestAdder_CAR(t *testing.T) {
 		}
 	}
 
+}
+
+func TestAdder_LargeFolder(t *testing.T) {
+	items := 10000 // add 10000 items
+
+	sth := test.NewShardingTestHelper()
+	defer sth.Clean(t)
+
+	filesMap := make(map[string]files.Node)
+	for i := 0; i < items; i++ {
+		fstr := fmt.Sprintf("file%d", i)
+		f := files.NewBytesFile([]byte(fstr))
+		filesMap[fstr] = f
+	}
+
+	slf := files.NewMapDirectory(filesMap)
+
+	p := api.DefaultAddParams()
+	p.Wrap = true
+
+	dags := newMockCDAGServ()
+	defer dags.Close()
+
+	adder := New(dags, p, nil)
+	_, err := adder.FromFiles(context.Background(), slf)
+
+	if err != nil {
+		t.Fatal(err)
+	}
 }

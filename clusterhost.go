@@ -4,27 +4,29 @@ import (
 	"context"
 	"encoding/hex"
 
+	config "github.com/ipfs-cluster/ipfs-cluster/config"
 	ds "github.com/ipfs/go-datastore"
 	namespace "github.com/ipfs/go-datastore/namespace"
 	ipns "github.com/ipfs/go-ipns"
-	config "github.com/ipfs/ipfs-cluster/config"
 	libp2p "github.com/libp2p/go-libp2p"
-	connmgr "github.com/libp2p/go-libp2p-connmgr"
-	crypto "github.com/libp2p/go-libp2p-core/crypto"
-	host "github.com/libp2p/go-libp2p-core/host"
-	network "github.com/libp2p/go-libp2p-core/network"
-	corepnet "github.com/libp2p/go-libp2p-core/pnet"
-	routing "github.com/libp2p/go-libp2p-core/routing"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	dual "github.com/libp2p/go-libp2p-kad-dht/dual"
-	noise "github.com/libp2p/go-libp2p-noise"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	libp2pquic "github.com/libp2p/go-libp2p-quic-transport"
 	record "github.com/libp2p/go-libp2p-record"
-	libp2ptls "github.com/libp2p/go-libp2p-tls"
+	crypto "github.com/libp2p/go-libp2p/core/crypto"
+	host "github.com/libp2p/go-libp2p/core/host"
+	network "github.com/libp2p/go-libp2p/core/network"
+	peer "github.com/libp2p/go-libp2p/core/peer"
+	corepnet "github.com/libp2p/go-libp2p/core/pnet"
+	routing "github.com/libp2p/go-libp2p/core/routing"
+	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
+	connmgr "github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	identify "github.com/libp2p/go-libp2p/p2p/protocol/identify"
-	tcp "github.com/libp2p/go-tcp-transport"
-	websocket "github.com/libp2p/go-ws-transport"
+	noise "github.com/libp2p/go-libp2p/p2p/security/noise"
+	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
+	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
+	tcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	websocket "github.com/libp2p/go-libp2p/p2p/transport/websocket"
 )
 
 const dhtNamespace = "dht"
@@ -65,7 +67,23 @@ func NewClusterHost(
 		return nil, nil, nil, err
 	}
 
+	var h host.Host
 	var idht *dual.DHT
+	// a channel to wait until these variables have been set
+	// (or left unset on errors). Mostly to avoid reading while writing.
+	hostAndDHTReady := make(chan struct{})
+	defer close(hostAndDHTReady)
+
+	hostGetter := func() host.Host {
+		<-hostAndDHTReady // closed when we finish NewClusterHost
+		return h
+	}
+
+	dhtGetter := func() *dual.DHT {
+		<-hostAndDHTReady // closed when we finish NewClusterHost
+		return idht
+	}
+
 	opts := []libp2p.Option{
 		libp2p.ListenAddrs(cfg.ListenAddr...),
 		libp2p.NATPortMap(),
@@ -76,7 +94,7 @@ func NewClusterHost(
 		}),
 		libp2p.EnableNATService(),
 		libp2p.EnableRelay(),
-		libp2p.EnableAutoRelay(),
+		libp2p.EnableAutoRelayWithPeerSource(newPeerSource(hostGetter, dhtGetter)),
 		libp2p.EnableHolePunching(),
 	}
 
@@ -84,7 +102,7 @@ func NewClusterHost(
 		opts = append(opts, libp2p.EnableRelayService())
 	}
 
-	h, err := newHost(
+	h, err = newHost(
 		ctx,
 		cfg.Secret,
 		ident.PrivateKey,
@@ -161,6 +179,61 @@ func newPubSub(ctx context.Context, h host.Host) (*pubsub.PubSub, error) {
 		pubsub.WithMessageSigning(true),
 		pubsub.WithStrictSignatureVerification(true),
 	)
+}
+
+// Inspired in Kubo's
+// https://github.com/ipfs/go-ipfs/blob/9327ee64ce96ca6da29bb2a099e0e0930b0d9e09/core/node/libp2p/relay.go#L79-L103
+// and https://github.com/ipfs/go-ipfs/blob/9327ee64ce96ca6da29bb2a099e0e0930b0d9e09/core/node/libp2p/routing.go#L242-L317
+// but simplified and adapted:
+//   - Everytime we need peers for relays we do a DHT lookup.
+//   - We return the peers from that lookup.
+//   - No need to do it async, since we have to wait for the full lookup to
+//     return anyways. We put them on a buffered channel and be done.
+func newPeerSource(hostGetter func() host.Host, dhtGetter func() *dual.DHT) autorelay.PeerSource {
+	return func(ctx context.Context, numPeers int) <-chan peer.AddrInfo {
+		// make a channel to return, and put items from numPeers on
+		// that channel up to numPeers. Then close it.
+		r := make(chan peer.AddrInfo, numPeers)
+		defer close(r)
+
+		// Because the Host, DHT are initialized after relay, we need to
+		// obtain them indirectly this way.
+		h := hostGetter()
+		if h == nil { // context canceled etc.
+			return r
+		}
+		idht := dhtGetter()
+		if idht == nil { // context canceled etc.
+			return r
+		}
+
+		// length of closest peers is K.
+		closestPeers, err := idht.WAN.GetClosestPeers(ctx, h.ID().String())
+		if err != nil { // Bail out. Usually a "no peers found".
+			return r
+		}
+
+		logger.Debug("peerSource: %d closestPeers for %d requested", len(closestPeers), numPeers)
+
+		for _, p := range closestPeers {
+			addrs := h.Peerstore().Addrs(p)
+			if len(addrs) == 0 {
+				continue
+			}
+			dhtPeer := peer.AddrInfo{ID: p, Addrs: addrs}
+			// Attempt to put peers on r if we have space,
+			// otherwise return (we reached numPeers)
+			select {
+			case r <- dhtPeer:
+			case <-ctx.Done():
+				return r
+			default:
+				return r
+			}
+		}
+		// We are here if numPeers > closestPeers
+		return r
+	}
 }
 
 // EncodeProtectorKey converts a byte slice to its hex string representation.

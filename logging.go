@@ -43,6 +43,8 @@ var LoggingFacilitiesExtra = map[string]string{
 	"libp2p-raft": "FATAL",
 	"raftlib":     "ERROR",
 	"badger":      "INFO",
+	"badger3":     "INFO",
+	"pebble":      "INFO",
 }
 
 // SetFacilityLogLevel sets the log level for a given module

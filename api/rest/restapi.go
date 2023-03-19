@@ -17,14 +17,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/adder/adderutils"
-	types "github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/api/common"
+	"github.com/ipfs-cluster/ipfs-cluster/adder/adderutils"
+	types "github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/api/common"
 
 	logging "github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p-core/host"
-	peer "github.com/libp2p/go-libp2p-core/peer"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
+	"github.com/libp2p/go-libp2p/core/host"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 
 	mux "github.com/gorilla/mux"
 )
@@ -197,6 +197,12 @@ func (api *API) routes(c *rpc.Client) []common.Route {
 			Method:      "GET",
 			Pattern:     "/monitor/metrics",
 			HandlerFunc: api.metricNamesHandler,
+		},
+		{
+			Name:        "GetToken",
+			Method:      "POST",
+			Pattern:     "/token",
+			HandlerFunc: api.GenerateTokenHandler,
 		},
 	}
 }
@@ -844,7 +850,7 @@ func (api *API) repoGCHandler(w http.ResponseWriter, r *http.Request) {
 func repoGCToGlobal(r types.RepoGC) types.GlobalRepoGC {
 	return types.GlobalRepoGC{
 		PeerMap: map[string]types.RepoGC{
-			peer.Encode(r.Peer): r,
+			r.Peer.String(): r,
 		},
 	}
 }

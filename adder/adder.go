@@ -10,14 +10,14 @@ import (
 	"mime/multipart"
 	"strings"
 
+	"github.com/ipfs-cluster/ipfs-cluster/adder/ipfsadd"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 	"github.com/ipfs/go-unixfs"
-	"github.com/ipfs/ipfs-cluster/adder/ipfsadd"
-	"github.com/ipfs/ipfs-cluster/api"
 	"github.com/ipld/go-car"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 
 	cid "github.com/ipfs/go-cid"
-	files "github.com/ipfs/go-ipfs-files"
+	files "github.com/ipfs/go-libipfs/files"
 	cbor "github.com/ipfs/go-ipld-cbor"
 	ipld "github.com/ipfs/go-ipld-format"
 	logging "github.com/ipfs/go-log/v2"
@@ -43,6 +43,9 @@ type ClusterDAGService interface {
 	// Finalize receives the IPFS content root CID as
 	// returned by the ipfs adder.
 	Finalize(ctx context.Context, ipfsRoot api.Cid) (api.Cid, error)
+	// Close performs any necessary cleanups and should be called
+	// whenever the DAGService is not going to be used anymore.
+	Close() error
 	// Allocations returns the allocations made by the cluster DAG service
 	// for the added content.
 	Allocations() []peer.ID
@@ -210,7 +213,7 @@ func newIpfsAdder(ctx context.Context, dgs ClusterDAGService, params api.AddPara
 
 	hashFunCode, ok := multihash.Names[strings.ToLower(params.HashFun)]
 	if !ok {
-		return nil, fmt.Errorf("unrecognized hash function: %s", params.HashFun)
+		return nil, errors.New("hash function name not known")
 	}
 	prefix.MhType = hashFunCode
 	prefix.MhLength = -1

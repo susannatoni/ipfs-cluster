@@ -10,14 +10,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 
 	shell "github.com/ipfs/go-ipfs-api"
-	files "github.com/ipfs/go-ipfs-files"
+	files "github.com/ipfs/go-libipfs/files"
 	logging "github.com/ipfs/go-log/v2"
-	host "github.com/libp2p/go-libp2p-core/host"
-	peer "github.com/libp2p/go-libp2p-core/peer"
-	pnet "github.com/libp2p/go-libp2p-core/pnet"
+	host "github.com/libp2p/go-libp2p/core/host"
+	peer "github.com/libp2p/go-libp2p/core/peer"
+	pnet "github.com/libp2p/go-libp2p/core/pnet"
 	ma "github.com/multiformats/go-multiaddr"
 	madns "github.com/multiformats/go-multiaddr-dns"
 	manet "github.com/multiformats/go-multiaddr/net"
@@ -43,7 +43,7 @@ var logger = logging.Logger(loggingFacility)
 // Client interface defines the interface to be used by API clients to
 // interact with the ipfs-cluster-service. All methods take a
 // context.Context as their first parameter, this allows for
-// timing out and cancelling of requests as well as recording
+// timing out and canceling of requests as well as recording
 // metrics and tracing of requests through the API.
 type Client interface {
 	// ID returns information about the cluster Peer.

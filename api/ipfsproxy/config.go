@@ -7,11 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	ipfsconfig "github.com/ipfs/go-ipfs-config"
 	"github.com/kelseyhightower/envconfig"
 	ma "github.com/multiformats/go-multiaddr"
 
-	"github.com/ipfs/ipfs-cluster/config"
+	"github.com/ipfs-cluster/ipfs-cluster/config"
 )
 
 const (
@@ -38,7 +37,7 @@ const (
 	DefaultMaxHeaderBytes     = minMaxHeaderBytes
 )
 
-// Config allows to customize behaviour of IPFSProxy.
+// Config allows to customize behavior of IPFSProxy.
 // It implements the config.ComponentConfig interface.
 type Config struct {
 	config.Saver
@@ -98,9 +97,9 @@ type Config struct {
 }
 
 type jsonConfig struct {
-	ListenMultiaddress ipfsconfig.Strings `json:"listen_multiaddress"`
-	NodeMultiaddress   string             `json:"node_multiaddress"`
-	NodeHTTPS          bool               `json:"node_https,omitempty"`
+	ListenMultiaddress config.Strings `json:"listen_multiaddress"`
+	NodeMultiaddress   string         `json:"node_multiaddress"`
+	NodeHTTPS          bool           `json:"node_https,omitempty"`
 
 	LogFile string `json:"log_file"`
 

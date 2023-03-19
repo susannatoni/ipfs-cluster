@@ -4,9 +4,9 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/ipfs/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 // PeerMetrics maps a peer IDs to a metrics window.

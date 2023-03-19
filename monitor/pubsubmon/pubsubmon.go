@@ -9,11 +9,11 @@ import (
 
 	"sync"
 
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/monitor/metrics"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/monitor/metrics"
 
 	logging "github.com/ipfs/go-log/v2"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	gocodec "github.com/ugorji/go/codec"
@@ -129,7 +129,7 @@ func (mon *Monitor) logFromPubsub() {
 			return
 		default:
 			msg, err := mon.subscription.Next(ctx)
-			if err != nil { // context cancelled enters here
+			if err != nil { // context canceled enters here
 				continue
 			}
 
@@ -158,7 +158,7 @@ func (mon *Monitor) logFromPubsub() {
 				}
 			}
 
-			debug("recieved", metric)
+			debug("received", metric)
 
 			err = mon.LogMetric(ctx, metric)
 			if err != nil {

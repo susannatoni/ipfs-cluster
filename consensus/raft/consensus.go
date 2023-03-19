@@ -10,17 +10,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/state"
-	"github.com/ipfs/ipfs-cluster/state/dsstate"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/state"
+	"github.com/ipfs-cluster/ipfs-cluster/state/dsstate"
 
 	ds "github.com/ipfs/go-datastore"
 	logging "github.com/ipfs/go-log/v2"
 	consensus "github.com/libp2p/go-libp2p-consensus"
-	host "github.com/libp2p/go-libp2p-core/host"
-	peer "github.com/libp2p/go-libp2p-core/peer"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 	libp2praft "github.com/libp2p/go-libp2p-raft"
+	host "github.com/libp2p/go-libp2p/core/host"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 
 	"go.opencensus.io/tag"
 	"go.opencensus.io/trace"
@@ -136,7 +136,7 @@ func (cc *Consensus) WaitForSync(ctx context.Context) error {
 
 	// Thus, waiting to be a Voter is a guarantee that we have a reasonable
 	// up to date state. Otherwise, we might return too early (see
-	// https://github.com/ipfs/ipfs-cluster/issues/378)
+	// https://github.com/ipfs-cluster/ipfs-cluster/issues/378)
 
 	_, err := cc.raft.WaitForLeader(leaderCtx)
 	if err != nil {
@@ -251,8 +251,8 @@ func (cc *Consensus) op(ctx context.Context, pin api.Pin, t LogOpType) *LogOp {
 // returns true if the operation was redirected to the leader
 // note that if the leader just dissappeared, the rpc call will
 // fail because we haven't heard that it's gone.
-func (cc *Consensus) redirectToLeader(method string, arg interface{}) (bool, error) {
-	ctx, span := trace.StartSpan(cc.ctx, "consensus/redirectToLeader")
+func (cc *Consensus) redirectToLeader(ctx context.Context, method string, arg interface{}) (bool, error) {
+	ctx, span := trace.StartSpan(ctx, "consensus/redirectToLeader")
 	defer span.End()
 
 	var finalErr error
@@ -275,10 +275,13 @@ func (cc *Consensus) redirectToLeader(method string, arg interface{}) (bool, err
 			// means we timed out waiting for a leader
 			// we don't retry in this case
 			if err != nil {
-				return false, fmt.Errorf("timed out waiting for leader: %s", err)
+				err = fmt.Errorf("timed out waiting for leader: %w", err)
+				logger.Error(err)
+				return false, err
 			}
 			leader, err = peer.Decode(pidstr)
 			if err != nil {
+				logger.Error(err)
 				return false, err
 			}
 		}
@@ -336,7 +339,7 @@ func (cc *Consensus) commit(ctx context.Context, op *LogOp, rpcOp string, redire
 		// try to send it to the leader
 		// redirectToLeader has it's own retry loop. If this fails
 		// we're done here.
-		ok, err := cc.redirectToLeader(rpcOp, redirectArg)
+		ok, err := cc.redirectToLeader(ctx, rpcOp, redirectArg)
 		if err != nil || ok {
 			return err
 		}
@@ -404,13 +407,13 @@ func (cc *Consensus) AddPeer(ctx context.Context, pid peer.ID) error {
 		if finalErr != nil {
 			logger.Errorf("retrying to add peer. Attempt #%d failed: %s", i, finalErr)
 		}
-		ok, err := cc.redirectToLeader("AddPeer", pid)
+		ok, err := cc.redirectToLeader(ctx, "AddPeer", pid)
 		if err != nil || ok {
 			return err
 		}
 		// Being here means we are the leader and can commit
 		cc.shutdownLock.RLock() // do not shutdown while committing
-		finalErr = cc.raft.AddPeer(ctx, peer.Encode(pid))
+		finalErr = cc.raft.AddPeer(ctx, pid.String())
 
 		cc.shutdownLock.RUnlock()
 		if finalErr != nil {
@@ -435,13 +438,13 @@ func (cc *Consensus) RmPeer(ctx context.Context, pid peer.ID) error {
 		if finalErr != nil {
 			logger.Errorf("retrying to remove peer. Attempt #%d failed: %s", i, finalErr)
 		}
-		ok, err := cc.redirectToLeader("RmPeer", pid)
+		ok, err := cc.redirectToLeader(ctx, "RmPeer", pid)
 		if err != nil || ok {
 			return err
 		}
 		// Being here means we are the leader and can commit
 		cc.shutdownLock.RLock() // do not shutdown while committing
-		finalErr = cc.raft.RemovePeer(ctx, peer.Encode(pid))
+		finalErr = cc.raft.RemovePeer(ctx, pid.String())
 		cc.shutdownLock.RUnlock()
 		if finalErr != nil {
 			time.Sleep(cc.config.CommitRetryDelay)

@@ -10,14 +10,14 @@ import (
 
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/adder"
-	"github.com/ipfs/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/adder"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 
 	humanize "github.com/dustin/go-humanize"
 	cid "github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
 	logging "github.com/ipfs/go-log/v2"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 )
 
@@ -75,6 +75,15 @@ func (dgs *DAGService) Add(ctx context.Context, node ipld.Node) error {
 	}
 
 	return dgs.ingestBlock(ctx, node)
+}
+
+// Close performs cleanup and should be called when the DAGService is not
+// going to be used anymore.
+func (dgs *DAGService) Close() error {
+	if dgs.currentShard != nil {
+		dgs.currentShard.Close()
+	}
+	return nil
 }
 
 // Finalize finishes sharding, creates the cluster DAG and pins it along

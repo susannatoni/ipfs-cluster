@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 
-	"github.com/ipfs/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 	"go.uber.org/multierr"
 
 	"go.opencensus.io/trace"
@@ -83,13 +82,12 @@ func (c *defaultClient) doRequest(
 		r.ContentLength = -1 // this lets go use "chunked".
 	}
 
-	ctx = trace.NewContext(ctx, span)
 	r = r.WithContext(ctx)
 
 	return c.client.Do(r)
 }
 func (c *defaultClient) handleResponse(resp *http.Response, obj interface{}) error {
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
 	if err != nil {

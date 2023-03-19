@@ -7,8 +7,11 @@ import (
 
 	ds "github.com/ipfs/go-datastore"
 	badgerds "github.com/ipfs/go-ds-badger"
+	logging "github.com/ipfs/go-log/v2"
 	"github.com/pkg/errors"
 )
+
+var logger = logging.Logger("badger")
 
 // New returns a BadgerDB datastore configured with the given
 // configuration.

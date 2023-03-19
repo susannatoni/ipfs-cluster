@@ -1,7 +1,7 @@
 package api
 
 import (
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 // PeersToStrings Encodes a list of peers.
@@ -9,7 +9,7 @@ func PeersToStrings(peers []peer.ID) []string {
 	strs := make([]string, len(peers))
 	for i, p := range peers {
 		if p != "" {
-			strs[i] = peer.Encode(p)
+			strs[i] = p.String()
 		}
 	}
 	return strs
@@ -21,7 +21,6 @@ func StringsToPeers(strs []string) []peer.ID {
 	for _, p := range strs {
 		pid, err := peer.Decode(p)
 		if err != nil {
-			logger.Debugf("'%s': %s", p, err)
 			continue
 		}
 		peers = append(peers, pid)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
-	"github.com/ipfs/ipfs-cluster/datastore/inmem"
-	"github.com/ipfs/ipfs-cluster/state"
-	"github.com/ipfs/ipfs-cluster/state/dsstate"
-	"github.com/multiformats/go-multihash"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/datastore/inmem"
+	"github.com/ipfs-cluster/ipfs-cluster/state"
+	"github.com/ipfs-cluster/ipfs-cluster/state/dsstate"
+	"github.com/multiformats/go-multicodec"
 
 	cid "github.com/ipfs/go-cid"
 	cors "github.com/rs/cors"
@@ -100,6 +99,10 @@ type mockIpfsPeer struct {
 
 type mockBlockPutResp struct {
 	Key string
+}
+
+type mockDagPutResp struct {
+	Cid cid.Cid
 }
 
 type mockRepoGCResp struct {
@@ -371,10 +374,19 @@ func (m *IpfsMock) handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Trailer", "X-Stream-Error")
 
 		query := r.URL.Query()
-		formatStr := query.Get("format")
-		format := cid.Codecs[formatStr]
-		mhType := multihash.Names[query.Get("mhtype")]
-		mhLen, _ := strconv.Atoi(query.Get("mhLen"))
+		mc := multicodec.Raw
+		if cdcstr := query.Get("cid-codec"); cdcstr != "" {
+			mc.Set(cdcstr)
+		}
+
+		mhType := multicodec.Sha2_256
+		if mh := query.Get("mhtype"); mh != "" {
+			mhType.Set(mh)
+		}
+		mhLen := -1
+		if l := query.Get("mhlen"); l != "" {
+			mhLen, _ = strconv.Atoi(l)
+		}
 
 		// Get the data and retun the hash
 		mpr, err := r.MultipartReader()
@@ -393,22 +405,16 @@ func (m *IpfsMock) handler(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Stream-Error", err.Error())
 				return
 			}
-			data, err := ioutil.ReadAll(part)
+			data, err := io.ReadAll(part)
 			if err != nil {
 				w.Header().Set("X-Stream-Error", err.Error())
 				return
 			}
 			// Parse cid from data and format and add to mock block-store
-
-			var builder cid.Builder
-			if formatStr == "v0" && mhType == multihash.SHA2_256 {
-				builder = cid.V0Builder{}
-			} else {
-				builder = cid.V1Builder{
-					Codec:    format,
-					MhType:   mhType,
-					MhLength: mhLen,
-				}
+			builder := cid.V1Builder{
+				Codec:    uint64(mc),
+				MhType:   uint64(mhType),
+				MhLength: mhLen,
 			}
 
 			c, err := builder.Sum(data)
@@ -438,6 +444,65 @@ func (m *IpfsMock) handler(w http.ResponseWriter, r *http.Request) {
 			goto ERROR
 		}
 		w.Write(data)
+	case "dag/put":
+		// DAG-put is a fake implementation as we are not going to
+		// parse the input and we are just going to hash it and return
+		// a response.
+		w.Header().Set("Trailer", "X-Stream-Error")
+
+		query := r.URL.Query()
+		storeCodec := query.Get("store-codec")
+		codec := multicodec.DagJson
+		if storeCodec != "" {
+			codec.Set(storeCodec)
+		}
+		hashFunc := query.Get("hash")
+		hash := multicodec.Sha2_256
+		if hashFunc != "" {
+			hash.Set(hashFunc)
+		}
+
+		// Get the data and retun the hash
+		mpr, err := r.MultipartReader()
+		if err != nil {
+			goto ERROR
+		}
+
+		w.WriteHeader(http.StatusOK)
+
+		for {
+			part, err := mpr.NextPart()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				w.Header().Set("X-Stream-Error", err.Error())
+				return
+			}
+			data, err := io.ReadAll(part)
+			if err != nil {
+				w.Header().Set("X-Stream-Error", err.Error())
+				return
+			}
+			// Parse cid from data and format and add to mock block-store
+			builder := cid.V1Builder{
+				Codec:    uint64(codec),
+				MhType:   uint64(hash),
+				MhLength: -1,
+			}
+
+			c, err := builder.Sum(data)
+			if err != nil {
+				w.Header().Set("X-Stream-Error", err.Error())
+				return
+			}
+
+			resp := mockDagPutResp{
+				Cid: c,
+			}
+			j, _ := json.Marshal(resp)
+			w.Write(j)
+		}
 	case "repo/gc":
 		// It assumes `/repo/gc` with parameter `stream-errors=true`
 		enc := json.NewEncoder(w)

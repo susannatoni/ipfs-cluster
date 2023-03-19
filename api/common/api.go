@@ -27,18 +27,19 @@ import (
 	"sync"
 	"time"
 
+	jwt "github.com/golang-jwt/jwt/v4"
+	types "github.com/ipfs-cluster/ipfs-cluster/api"
+	state "github.com/ipfs-cluster/ipfs-cluster/state"
 	logging "github.com/ipfs/go-log/v2"
 	gopath "github.com/ipfs/go-path"
-	types "github.com/ipfs/ipfs-cluster/api"
-	state "github.com/ipfs/ipfs-cluster/state"
 	libp2p "github.com/libp2p/go-libp2p"
-	host "github.com/libp2p/go-libp2p-core/host"
-	peer "github.com/libp2p/go-libp2p-core/peer"
 	rpc "github.com/libp2p/go-libp2p-gorpc"
 	gostream "github.com/libp2p/go-libp2p-gostream"
 	p2phttp "github.com/libp2p/go-libp2p-http"
-	noise "github.com/libp2p/go-libp2p-noise"
-	libp2ptls "github.com/libp2p/go-libp2p-tls"
+	host "github.com/libp2p/go-libp2p/core/host"
+	peer "github.com/libp2p/go-libp2p/core/peer"
+	noise "github.com/libp2p/go-libp2p/p2p/security/noise"
+	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	manet "github.com/multiformats/go-multiaddr/net"
 
 	handlers "github.com/gorilla/handlers"
@@ -104,6 +105,10 @@ type Route struct {
 	HandlerFunc http.HandlerFunc
 }
 
+type jwtToken struct {
+	Token string `json:"token"`
+}
+
 type logWriter struct {
 	logger *logging.ZapEventLogger
 }
@@ -126,6 +131,17 @@ func NewAPIWithHost(ctx context.Context, cfg *Config, h host.Host, routes func(*
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+
+	api := &API{
+		ctx:      ctx,
+		cancel:   cancel,
+		config:   cfg,
+		host:     h,
+		routes:   routes,
+		rpcReady: make(chan struct{}, 2),
+	}
+
 	// Our handler is a gorilla router wrapped with:
 	// - a custom strictSlashHandler that uses 307 redirects (#1415)
 	// - the cors handler,
@@ -137,8 +153,7 @@ func NewAPIWithHost(ctx context.Context, cfg *Config, h host.Host, routes func(*
 	// redirected if the path ends with a "/". Finally they hit one of our
 	// routes and handlers.
 	router := mux.NewRouter()
-	handler := basicAuthHandler(
-		cfg,
+	handler := api.authHandler(
 		cors.New(*cfg.CorsOptions()).
 			Handler(
 				strictSlashHandler(router),
@@ -157,6 +172,7 @@ func NewAPIWithHost(ctx context.Context, cfg *Config, h host.Host, routes func(*
 
 	writer, err := cfg.LogWriter()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
@@ -170,23 +186,13 @@ func NewAPIWithHost(ctx context.Context, cfg *Config, h host.Host, routes func(*
 	}
 
 	// See: https://github.com/ipfs/go-ipfs/issues/5168
-	// See: https://github.com/ipfs/ipfs-cluster/issues/548
+	// See: https://github.com/ipfs-cluster/ipfs-cluster/issues/548
 	// on why this is re-enabled.
 	s.SetKeepAlivesEnabled(true)
 	s.MaxHeaderBytes = cfg.MaxHeaderBytes
 
-	ctx, cancel := context.WithCancel(ctx)
-
-	api := &API{
-		ctx:      ctx,
-		cancel:   cancel,
-		config:   cfg,
-		server:   s,
-		host:     h,
-		router:   router,
-		routes:   routes,
-		rpcReady: make(chan struct{}, 2),
-	}
+	api.server = s
+	api.router = router
 
 	// Set up api.httpListeners if enabled
 	err = api.setupHTTP()
@@ -239,7 +245,7 @@ func (api *API) setupLibp2p() error {
 	if len(api.config.Libp2pListenAddr) > 0 {
 		// We use a new host context. We will call
 		// Close() on shutdown(). Avoids things like:
-		// https://github.com/ipfs/ipfs-cluster/issues/853
+		// https://github.com/ipfs-cluster/ipfs-cluster/issues/853
 		h, err := libp2p.New(
 			libp2p.Identity(api.config.PrivateKey),
 			libp2p.ListenAddrs(api.config.Libp2pListenAddr...),
@@ -283,11 +289,12 @@ func (api *API) addRoutes() {
 	)
 }
 
-// basicAuth wraps a given handler with basic authentication
-func basicAuthHandler(cfg *Config, h http.Handler, lggr *logging.ZapEventLogger) http.Handler {
+// authHandler takes care of authentication either using basicAuth or JWT bearer tokens.
+func (api *API) authHandler(h http.Handler, lggr *logging.ZapEventLogger) http.Handler {
 
-	credentials := cfg.BasicAuthCredentials
+	credentials := api.config.BasicAuthCredentials
 
+	// If no credentials are set, we do nothing.
 	if credentials == nil {
 		return h
 	}
@@ -300,36 +307,99 @@ func basicAuthHandler(cfg *Config, h http.Handler, lggr *logging.ZapEventLogger)
 			return
 		}
 
-		w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
-		username, password, ok := r.BasicAuth()
-		if !ok {
-			resp, err := unauthorizedResp(cfg.APIErrorFunc)
-			if err != nil {
-				lggr.Error(err)
+		username, password, okBasic := r.BasicAuth()
+		tokenString, okToken := parseBearerToken(r.Header.Get("Authorization"))
+
+		switch {
+		case okBasic:
+			ok := verifyBasicAuth(credentials, username, password)
+			if !ok {
+				w.Header().Set("WWW-Authenticate", wwwAuthenticate("Basic", "Restricted IPFS Cluster API", "", ""))
+				api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized: access denied"), nil)
 				return
 			}
-			http.Error(w, resp, http.StatusUnauthorized)
+		case okToken:
+			_, err := verifyToken(credentials, tokenString)
+			if err != nil {
+				lggr.Debug(err)
+
+				w.Header().Set("WWW-Authenticate", wwwAuthenticate("Bearer", "Restricted IPFS Cluster API", "invalid_token", ""))
+				api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized: invalid token"), nil)
+				return
+			}
+		default:
+			// No authentication provided, but needed
+			w.Header().Add("WWW-Authenticate", wwwAuthenticate("Bearer", "Restricted IPFS Cluster API", "", ""))
+			w.Header().Add("WWW-Authenticate", wwwAuthenticate("Basic", "Restricted IPFS Cluster API", "", ""))
+			api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized: no auth provided"), nil)
 			return
 		}
 
-		authorized := false
-		for u, p := range credentials {
-			if u == username && p == password {
-				authorized = true
-			}
-		}
-		if !authorized {
-			resp, err := unauthorizedResp(cfg.APIErrorFunc)
-			if err != nil {
-				lggr.Error(err)
-				return
-			}
-			http.Error(w, resp, http.StatusUnauthorized)
-			return
-		}
+		// If we are here, authentication worked.
 		h.ServeHTTP(w, r)
 	}
 	return http.HandlerFunc(wrap)
+}
+
+func parseBearerToken(authHeader string) (string, bool) {
+	const prefix = "Bearer "
+	if len(authHeader) < len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
+		return "", false
+	}
+
+	return authHeader[len(prefix):], true
+}
+
+func wwwAuthenticate(auth, realm, error, description string) string {
+	str := auth + ` realm="` + realm + `"`
+	if len(error) > 0 {
+		str += `, error="` + error + `"`
+	}
+	if len(description) > 0 {
+		str += `, error_description="` + description + `"`
+	}
+	return str
+}
+
+func verifyBasicAuth(credentials map[string]string, username, password string) bool {
+	if username == "" || password == "" {
+		return false
+	}
+	for u, p := range credentials {
+		if u == username && p == password {
+			return true
+		}
+	}
+	return false
+}
+
+// verify that a Bearer JWT token is valid.
+func verifyToken(credentials map[string]string, tokenString string) (*jwt.Token, error) {
+	// The token should be signed with the basic auth credential password
+	// of the issuer, and should have valid standard claims otherwise.
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected token signing method (not HMAC)")
+		}
+
+		if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok {
+			key, ok := credentials[claims.Issuer]
+			if !ok {
+				return nil, errors.New("issuer not found")
+			}
+			return []byte(key), nil
+		}
+		return nil, errors.New("no issuer set")
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if !token.Valid {
+		return nil, errors.New("invalid token")
+	}
+	return token, nil
 }
 
 // The Gorilla muxer StrictSlash option uses a 301 permanent redirect, which
@@ -349,12 +419,6 @@ func strictSlashHandler(h http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(wrap)
-}
-
-func unauthorizedResp(errF func(error, int) error) (string, error) {
-	apiError := errF(errors.New("Unauthorized"), http.StatusUnauthorized)
-	resp, err := json.Marshal(apiError)
-	return string(resp), err
 }
 
 func (api *API) run(ctx context.Context) {
@@ -388,7 +452,12 @@ func (api *API) runHTTPServer(ctx context.Context, l net.Listener) {
 		api.config.Logger.Error(err)
 	}
 
-	api.config.Logger.Infof(strings.ToUpper(api.config.ConfigKey)+" (HTTP): %s", maddr)
+	var authInfo string
+	if api.config.BasicAuthCredentials != nil {
+		authInfo = " - authenticated"
+	}
+
+	api.config.Logger.Infof(strings.ToUpper(api.config.ConfigKey)+" (HTTP"+authInfo+"): %s", maddr)
 	err = api.server.Serve(l)
 	if err != nil && !strings.Contains(err.Error(), "closed network connection") {
 		api.config.Logger.Error(err)
@@ -528,6 +597,65 @@ func (api *API) ParsePidOrFail(w http.ResponseWriter, r *http.Request) peer.ID {
 	return pid
 }
 
+// GenerateTokenHandler is a handle to obtain a new JWT token
+func (api *API) GenerateTokenHandler(w http.ResponseWriter, r *http.Request) {
+	if api.config.BasicAuthCredentials == nil {
+		api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized"), nil)
+		return
+	}
+
+	var issuer string
+
+	// We do not verify as we assume it is already done!
+	user, _, okBasic := r.BasicAuth()
+	tokenString, okToken := parseBearerToken(r.Header.Get("Authorization"))
+
+	if okBasic {
+		issuer = user
+	} else if okToken {
+		token, err := verifyToken(api.config.BasicAuthCredentials, tokenString)
+		if err != nil { // I really hope not because it should be verified
+			api.config.Logger.Error("verify token failed in GetTokenHandler!")
+			api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized"), nil)
+			return
+		}
+		if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok {
+			issuer = claims.Issuer
+		} else {
+			api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized"), nil)
+			return
+		}
+	} else { // no issuer
+		api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized"), nil)
+		return
+	}
+
+	pass, okPass := api.config.BasicAuthCredentials[issuer]
+	if !okPass { // another place that should never be reached
+		api.SendResponse(w, http.StatusUnauthorized, errors.New("unauthorized"), nil)
+		return
+	}
+
+	ss, err := generateSignedTokenString(issuer, pass)
+	if err != nil {
+		api.SendResponse(w, SetStatusAutomatically, err, nil)
+		return
+	}
+	tokenObj := jwtToken{Token: ss}
+
+	api.SendResponse(w, SetStatusAutomatically, nil, tokenObj)
+}
+
+func generateSignedTokenString(issuer, pass string) (string, error) {
+	key := []byte(pass)
+	claims := jwt.RegisteredClaims{
+		Issuer: issuer,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(key)
+}
+
 // SendResponse wraps all the logic for writing the response to a request:
 // * Write configured headers
 // * Write application/json content type
@@ -614,10 +742,30 @@ func (api *API) StreamResponse(w http.ResponseWriter, next StreamIterator, errCh
 				}
 				return
 			}
-			if !ok { // but no error.
+
+			if !ok {
+				// nothing in the channel, check for errors
+				for err = range errCh {
+					if err == nil {
+						continue
+					}
+					st := http.StatusInternalServerError
+					w.WriteHeader(st)
+					errorResp := api.config.APIErrorFunc(err, st)
+					if err := enc.Encode(errorResp); err != nil {
+						api.config.Logger.Error(err)
+					}
+					// This is correct, here we just process
+					// the first error in the channel.
+					return
+				}
+
+				// No errors at all, then NoContent.
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+			// There is at least one item and no error, start with
+			// a 200 response.
 			w.WriteHeader(http.StatusOK)
 		}
 		if err != nil {

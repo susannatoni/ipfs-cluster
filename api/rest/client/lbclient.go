@@ -5,9 +5,9 @@ import (
 	"sync/atomic"
 
 	shell "github.com/ipfs/go-ipfs-api"
-	files "github.com/ipfs/go-ipfs-files"
-	"github.com/ipfs/ipfs-cluster/api"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	files "github.com/ipfs/go-libipfs/files"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 // loadBalancingClient is a client to interact with IPFS Cluster APIs

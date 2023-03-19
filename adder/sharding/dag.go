@@ -20,10 +20,10 @@ import (
 	"context"
 	"fmt"
 
-	blocks "github.com/ipfs/go-block-format"
 	cid "github.com/ipfs/go-cid"
 	cbor "github.com/ipfs/go-ipld-cbor"
 	ipld "github.com/ipfs/go-ipld-format"
+	blocks "github.com/ipfs/go-libipfs/blocks"
 	dag "github.com/ipfs/go-merkledag"
 	mh "github.com/multiformats/go-multihash"
 )
@@ -81,7 +81,7 @@ func makeDAGSimple(ctx context.Context, dagObj map[string]cid.Cid) (ipld.Node, e
 // recursively pinned to track the shard
 func makeDAG(ctx context.Context, dagObj map[string]cid.Cid) ([]ipld.Node, error) {
 	// FIXME: We have a 4MB limit on the block size enforced by bitswap:
-	// https://github.com/libp2p/go-libp2p-core/blob/master/network/network.go#L23
+	// https://github.com/libp2p/go-libp2p/core/blob/master/network/network.go#L23
 
 	// No indirect node
 	if len(dagObj) <= MaxLinks {

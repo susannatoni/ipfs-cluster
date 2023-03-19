@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ipfs/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 	"go.opencensus.io/trace"
 )
 
@@ -56,7 +56,6 @@ type Operation struct {
 
 	tracker *OperationTracker
 
-	// RO fields
 	opType OperationType
 	pin    api.Pin
 
@@ -75,7 +74,7 @@ func newOperation(ctx context.Context, pin api.Pin, typ OperationType, ph Phase,
 	defer span.End()
 
 	ctx, cancel := context.WithCancel(ctx)
-	return &Operation{
+	op := &Operation{
 		ctx:    ctx,
 		cancel: cancel,
 
@@ -89,6 +88,7 @@ func newOperation(ctx context.Context, pin api.Pin, typ OperationType, ph Phase,
 		ts:           time.Now(),
 		error:        "",
 	}
+	return op
 }
 
 // String returns a string representation of an Operation.
@@ -122,9 +122,7 @@ func (op *Operation) Context() context.Context {
 
 // Cancel will cancel the context associated to this operation.
 func (op *Operation) Cancel() {
-	_, span := trace.StartSpan(op.ctx, "optracker/Cancel")
 	op.cancel()
-	span.End()
 }
 
 // Phase returns the Phase.
@@ -140,16 +138,14 @@ func (op *Operation) Phase() Phase {
 
 // SetPhase changes the Phase and updates the timestamp.
 func (op *Operation) SetPhase(ph Phase) {
-	_, span := trace.StartSpan(op.ctx, "optracker/SetPhase")
-	op.tracker.recordMetric(op, -1)
 	op.mu.Lock()
 	{
+		op.tracker.recordMetricUnsafe(op, -1)
 		op.phase = ph
 		op.ts = time.Now()
+		op.tracker.recordMetricUnsafe(op, 1)
 	}
 	op.mu.Unlock()
-	op.tracker.recordMetric(op, 1)
-	span.End()
 }
 
 // AttemptCount returns the number of times that this operation has been in
@@ -199,17 +195,15 @@ func (op *Operation) Error() string {
 // SetError sets the phase to PhaseError along with
 // an error message. It updates the timestamp.
 func (op *Operation) SetError(err error) {
-	_, span := trace.StartSpan(op.ctx, "optracker/SetError")
-	op.tracker.recordMetric(op, -1)
 	op.mu.Lock()
 	{
+		op.tracker.recordMetricUnsafe(op, -1)
 		op.phase = PhaseError
 		op.error = err.Error()
 		op.ts = time.Now()
+		op.tracker.recordMetricUnsafe(op, 1)
 	}
 	op.mu.Unlock()
-	op.tracker.recordMetric(op, 1)
-	span.End()
 }
 
 // Type returns the operation Type.
@@ -232,12 +226,9 @@ func (op *Operation) Timestamp() time.Time {
 	return ts
 }
 
-// Cancelled returns whether the context for this
-// operation has been cancelled.
-func (op *Operation) Cancelled() bool {
-	ctx, span := trace.StartSpan(op.ctx, "optracker/Cancelled")
-	_ = ctx
-	defer span.End()
+// Canceled returns whether the context for this
+// operation has been canceled.
+func (op *Operation) Canceled() bool {
 	select {
 	case <-op.ctx.Done():
 		return true

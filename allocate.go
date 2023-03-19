@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 
 	"go.opencensus.io/trace"
 
-	"github.com/ipfs/ipfs-cluster/api"
+	"github.com/ipfs-cluster/ipfs-cluster/api"
 )
 
 // This file gathers allocation logic used when pinning or re-pinning
@@ -102,6 +102,11 @@ func (c *Cluster) allocate(ctx context.Context, hash api.Cid, currentPin api.Pin
 	if err != nil {
 		return newAllocs, err
 	}
+
+	// if current allocations are above the minimal threshold,
+	// obtainAllocations returns nil and we just leave things as they are.
+	// This is what makes repinning do nothing if items are still above
+	// rmin.
 	if newAllocs == nil {
 		newAllocs = currentAllocs
 	}
